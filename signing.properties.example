@@ -1,0 +1,6 @@
+# Copy this file to signing.properties and fill in your PRIVATE release keystore details.
+# Never commit signing.properties or the keystore to Git.
+storeFile=release-key.jks
+storePassword=CHANGE_ME
+keyAlias=qrscanner
+keyPassword=CHANGE_ME

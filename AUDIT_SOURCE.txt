@@ -1,0 +1,821 @@
+
+==================== .\app\src\main\java\com\aakash\qrscanner\MainActivity.kt ====================
+
+package com.aakash.qrscanner
+
+import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Bundle
+import android.provider.Settings
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.aakash.qrscanner.ads.AdBanner
+import com.aakash.qrscanner.data.HistoryEntity
+import com.aakash.qrscanner.data.HistoryKind
+import com.aakash.qrscanner.data.HistoryRepository
+import com.aakash.qrscanner.generator.QrGenerator
+import com.aakash.qrscanner.scanner.barcodeTitle
+import com.aakash.qrscanner.scanner.isSafeWebUrl
+import com.google.android.gms.ads.MobileAds
+import com.google.android.ump.ConsentInformation
+import com.google.android.ump.ConsentRequestParameters
+import com.google.android.ump.UserMessagingPlatform
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.common.InputImage
+import kotlinx.coroutines.launch
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+
+enum class Screen { HOME, SCAN, GENERATE, HISTORY, SETTINGS }
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+class MainActivity : ComponentActivity() {
+    private val adsReady = mutableStateOf(false)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        requestAdConsent()
+        val repo = (application as QRApplication).repository
+        setContent { QRApp(repo, adsReady.value) }
+    }
+
+    private fun requestAdConsent() {
+        val consentInfo = UserMessagingPlatform.getConsentInformation(this)
+        val params = ConsentRequestParameters.Builder().build()
+        fun initializeAds() {
+            if (adsReady.value) return
+            MobileAds.initialize(this) { adsReady.value = true }
+        }
+        consentInfo.requestConsentInfoUpdate(
+            this,
+            params,
+            {
+                UserMessagingPlatform.loadAndShowConsentFormIfRequired(this) { initializeAds() }
+            },
+            { initializeAds() }
+        )
+        if (consentInfo.consentStatus == ConsentInformation.ConsentStatus.OBTAINED ||
+            consentInfo.consentStatus == ConsentInformation.ConsentStatus.NOT_REQUIRED) {
+            initializeAds()
+        }
+    }
+}
+
+class QRViewModel(private val repo: HistoryRepository) : ViewModel() {
+    val history = repo.items
+    suspend fun add(kind: HistoryKind, title: String, content: String) = repo.add(kind, title, content)
+    suspend fun delete(id: Long) = repo.delete(id)
+    suspend fun clear() = repo.clear()
+}
+
+class QRViewModelFactory(private val repo: HistoryRepository) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T = QRViewModel(repo) as T
+}
+
+@Composable
+fun QRApp(repo: HistoryRepository, adsReady: Boolean) {
+    val vm: QRViewModel = viewModel(factory = QRViewModelFactory(repo))
+    val context = LocalContext.current
+    var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
+    var themeMode by rememberSaveable { mutableStateOf(ThemeMode.SYSTEM) }
+    val scope = rememberCoroutineScope()
+    val storedTheme by AppSettings.themeFlow(context).collectAsStateWithLifecycle(initialValue = ThemeMode.SYSTEM)
+    LaunchedEffect(storedTheme) { themeMode = storedTheme }
+    val dark = when (themeMode) {
+        ThemeMode.DARK -> true
+        ThemeMode.LIGHT -> false
+        ThemeMode.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
+    }
+    MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
+        Scaffold(bottomBar = {
+            if (screen != Screen.SCAN) NavigationBar {
+                NavigationBarItem(screen == Screen.HOME, { screen = Screen.HOME }, icon = { Icon(Icons.Default.Home, "Home") }, label = { Text("Home") })
+                NavigationBarItem(screen == Screen.HISTORY, { screen = Screen.HISTORY }, icon = { Icon(Icons.Default.History, "History") }, label = { Text("History") })
+                NavigationBarItem(screen == Screen.SETTINGS, { screen = Screen.SETTINGS }, icon = { Icon(Icons.Default.Settings, "Settings") }, label = { Text("Settings") })
+            }
+        }) { padding ->
+            Box(Modifier.padding(padding).fillMaxSize()) {
+                when (screen) {
+                    Screen.HOME -> HomeScreen({ screen = Screen.SCAN }, { screen = Screen.GENERATE }, adsReady)
+                    Screen.SCAN -> ScanScreen({ screen = Screen.HOME }, vm)
+                    Screen.GENERATE -> GenerateScreen({ screen = Screen.HOME }, vm, adsReady)
+                    Screen.HISTORY -> HistoryScreen(vm)
+                    Screen.SETTINGS -> SettingsScreen(themeMode) { mode ->
+                        themeMode = mode
+                        scope.launch { AppSettings.setTheme(context, mode) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HomeScreen(onScan: () -> Unit, onGenerate: () -> Unit, adsReady: Boolean) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Spacer(Modifier.height(24.dp))
+        Text("QR Scanner & Generator", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Fast, private and easy to use", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(32.dp))
+        BigAction("SCAN QR", Icons.Default.QrCodeScanner, onScan)
+        Spacer(Modifier.height(16.dp))
+        BigAction("CREATE QR", Icons.Default.QrCode2, onGenerate)
+        Spacer(Modifier.height(24.dp))
+        if (adsReady) AdBanner(Modifier.fillMaxWidth())
+        Spacer(Modifier.height(16.dp))
+        Text("QR scanning and generation are processed on this device. QR contents are not uploaded to our server.", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+fun BigAction(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    Button(onClick = onClick, modifier = Modifier.fillMaxWidth().height(64.dp), shape = RoundedCornerShape(18.dp)) {
+        Icon(icon, null); Spacer(Modifier.width(12.dp)); Text(label, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun ScanScreen(onBack: () -> Unit, vm: QRViewModel) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var hasPermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
+    var permissionDenied by rememberSaveable { mutableStateOf(false) }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        hasPermission = it
+        permissionDenied = !it
+    }
+    var result by rememberSaveable { mutableStateOf<String?>(null) }
+    var title by rememberSaveable { mutableStateOf("Text") }
+    var torch by rememberSaveable { mutableStateOf(false) }
+    var camera by remember { mutableStateOf<Camera?>(null) }
+
+    fun acceptResult(value: String, type: String) {
+        if (result != null || value.isBlank()) return
+        result = value
+        title = type
+        scope.launch { vm.add(HistoryKind.SCANNED, type, value) }
+    }
+
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scanImage(context, uri, ::acceptResult)
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasPermission) permission.launch(Manifest.permission.CAMERA)
+    }
+    LaunchedEffect(camera, torch) { camera?.cameraControl?.enableTorch(torch) }
+    BackHandler(onBack = onBack)
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+            Text("Scan QR", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            IconButton(enabled = camera != null && hasPermission && result == null, onClick = { torch = !torch }) {
+                Icon(if (torch) Icons.Default.FlashOn else Icons.Default.FlashOff, "Flashlight")
+            }
+            IconButton(onClick = { gallery.launch("image/*") }) { Icon(Icons.Default.PhotoLibrary, "Scan from image") }
+        }
+        when {
+            !hasPermission -> PermissionState(permissionDenied) {
+                permissionDenied = false
+                permission.launch(Manifest.permission.CAMERA)
+            }
+            result == null -> CameraPreview(
+                onCamera = { camera = it },
+                onCameraUnavailable = { toast(context, "Camera could not be started") },
+                onResult = ::acceptResult
+            )
+            else -> ResultCard(
+                title = title,
+                value = result!!,
+                onClear = { result = null; torch = false },
+                onCopy = { copy(context, result!!); toast(context, "Copied") },
+                onShare = { shareText(context, result!!) },
+                onOpen = if (isSafeWebUrl(result!!)) ({ openUrl(context, result!!) }) else null
+            )
+        }
+    }
+}
+
+@Composable
+private fun PermissionState(permanentlyDenied: Boolean, request: () -> Unit) {
+    val context = LocalContext.current
+    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(Icons.Default.CameraAlt, null, Modifier.size(48.dp))
+        Spacer(Modifier.height(12.dp))
+        Text(if (permanentlyDenied) "Camera permission is needed to scan QR codes." else "Camera permission is required to scan QR codes.")
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = if (permanentlyDenied) ({ context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) }) else request) {
+            Text(if (permanentlyDenied) "Open app settings" else "Allow camera")
+        }
+    }
+}
+
+@Composable
+fun CameraPreview(
+    onCamera: (Camera) -> Unit,
+    onCameraUnavailable: () -> Unit,
+    onResult: (String, String) -> Unit
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val previewView = remember { PreviewView(context) }
+    val executor = remember { Executors.newSingleThreadExecutor() }
+    val scanner = remember {
+        val options = BarcodeScannerOptions.Builder()
+            .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
+            .build()
+        BarcodeScanning.getClient(options)
+    }
+    val delivered = remember { AtomicBoolean(false) }
+
+    DisposableEffect(lifecycleOwner) {
+        val providerFuture = ProcessCameraProvider.getInstance(context)
+        val listener = Runnable {
+            try {
+                val provider = providerFuture.get()
+                val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                analysis.setAnalyzer(executor) { proxy ->
+                    val mediaImage = proxy.image
+                    if (mediaImage == null || delivered.get()) {
+                        proxy.close()
+                        return@setAnalyzer
+                    }
+                    scanner.process(InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees))
+                        .addOnSuccessListener { codes ->
+                            val code = codes.firstOrNull { !it.rawValue.isNullOrBlank() }
+                            if (code != null && delivered.compareAndSet(false, true)) {
+                                onResult(code.rawValue.orEmpty(), barcodeTitle(code))
+                            }
+                        }
+                        .addOnCompleteListener { proxy.close() }
+                }
+                val cam = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                onCamera(cam)
+            } catch (_: Exception) {
+                onCameraUnavailable()
+            }
+        }
+        providerFuture.addListener(listener, ContextCompat.getMainExecutor(context))
+        onDispose {
+            runCatching { providerFuture.get().unbindAll() }
+            runCatching { scanner.close() }
+            runCatching { executor.shutdownNow() }
+        }
+    }
+
+    AndroidView(factory = { previewView }, modifier = Modifier.fillMaxWidth().weight(1f))
+}
+
+fun scanImage(context: Context, uri: Uri, onResult: (String, String) -> Unit) {
+    runCatching { InputImage.fromFilePath(context, uri) }
+        .onSuccess { image ->
+            val options = BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
+                .build()
+            val scanner = BarcodeScanning.getClient(options)
+            scanner.process(image)
+                .addOnSuccessListener { codes ->
+                    val code = codes.firstOrNull { !it.rawValue.isNullOrBlank() }
+                    if (code != null) onResult(code.rawValue.orEmpty(), barcodeTitle(code)) else toast(context, "No QR code found in this image")
+                }
+                .addOnFailureListener { toast(context, "Could not scan this image") }
+                .addOnCompleteListener { scanner.close() }
+        }
+        .onFailure { toast(context, "Could not open this image") }
+}
+
+@Composable
+fun ResultCard(title: String, value: String, onClear: () -> Unit, onCopy: () -> Unit, onShare: () -> Unit, onOpen: (() -> Unit)?) {
+    Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(12.dp))
+        Text(value, Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp)).padding(16.dp))
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onCopy) { Icon(Icons.Default.ContentCopy, null); Spacer(Modifier.width(6.dp)); Text("Copy") }
+            OutlinedButton(onShare) { Icon(Icons.Default.Share, null); Spacer(Modifier.width(6.dp)); Text("Share") }
+        }
+        if (onOpen != null) {
+            Spacer(Modifier.height(8.dp))
+            Button(onOpen, Modifier.fillMaxWidth()) { Icon(Icons.Default.OpenInBrowser, null); Spacer(Modifier.width(8.dp)); Text("Open website") }
+        }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClear) { Text("Scan another") }
+    }
+}
+
+@Composable
+fun GenerateScreen(onBack: () -> Unit, vm: QRViewModel, adsReady: Boolean) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    BackHandler(onBack = onBack)
+    var type by rememberSaveable { mutableStateOf("Text") }
+    var content by rememberSaveable { mutableStateOf("") }
+    var validation by rememberSaveable { mutableStateOf<String?>(null) }
+    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+        val current = bitmap
+        if (uri != null && current != null) {
+            val saved = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    check(current.compress(Bitmap.CompressFormat.PNG, 100, out)) { "PNG encoding failed" }
+                } ?: error("Unable to open destination")
+            }
+            saved.onSuccess { toast(context, "QR image saved") }.onFailure { toast(context, "Could not save QR image") }
+        }
+    }
+    val types = listOf("Text", "Website", "Wi-Fi", "Phone", "Email", "SMS", "Contact", "Location")
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+            Text("Create QR", style = MaterialTheme.typography.titleLarge)
+        }
+        Text("Type", style = MaterialTheme.typography.labelLarge)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            types.forEach { item -> AssistChip(onClick = { type = item; content = ""; bitmap = null; validation = null }, label = { Text(item) }, leadingIcon = if (type == item) ({ Icon(Icons.Default.Check, null) }) else null) }
+        }
+        Spacer(Modifier.height(14.dp))
+        GeneratorFields(type) { content = it }
+        validation?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp)) }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            enabled = content.isNotBlank(),
+            onClick = {
+                validation = validateGenerator(type, content)
+                if (validation == null) {
+                    val generated = runCatching { QrGenerator.encode(content) }
+                    generated.onSuccess {
+                        bitmap = it
+                        scope.launch { vm.add(HistoryKind.GENERATED, type, content) }
+                    }.onFailure { validation = "This content is too long or cannot be encoded as a QR code." }
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Icon(Icons.Default.QrCode2, null); Spacer(Modifier.width(8.dp)); Text("Generate QR") }
+        bitmap?.let { bmp ->
+            Spacer(Modifier.height(18.dp))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Image(bmp.asImageBitmap(), "Generated QR code", Modifier.size(280.dp)) }
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({ saveLauncher.launch("QR_${System.currentTimeMillis()}.png") }, Modifier.weight(1f)) { Text("Save image") }
+                OutlinedButton({ shareBitmap(context, bmp) }, Modifier.weight(1f)) { Text("Share") }
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        if (adsReady) AdBanner(Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+fun GeneratorFields(type: String, onContent: (String) -> Unit) {
+    var a by remember(type) { mutableStateOf("") }
+    var b by remember(type) { mutableStateOf("") }
+    var c by remember(type) { mutableStateOf("") }
+    var d by remember(type) { mutableStateOf("") }
+    fun field(label: String, value: String, set: (String) -> Unit, single: Boolean = true) {
+        OutlinedTextField(value, set, label = { Text(label) }, modifier = Modifier.fillMaxWidth(), singleLine = single)
+    }
+    when (type) {
+        "Text" -> field("Text", a, { a = it; onContent(a) }, false)
+        "Website" -> field("Website URL (https://example.com)", a, { a = it; onContent(a) })
+        "Phone" -> field("Phone number", a, { a = it; onContent("tel:${a.trim()}") })
+        "Email" -> {
+            field("Email address", a, { a = it }); field("Subject (optional)", b, { b = it }); field("Message (optional)", c, { c = it }, false)
+            LaunchedEffect(a, b, c) { onContent(if (a.isBlank()) "" else "mailto:${Uri.encode(a.trim())}?subject=${Uri.encode(b)}&body=${Uri.encode(c)}") }
+        }
+        "SMS" -> {
+            field("Phone number", a, { a = it }); field("Message", b, { b = it }, false)
+            LaunchedEffect(a, b) { onContent(if (a.isBlank()) "" else "SMSTO:${a.trim()}:${b}") }
+        }
+        "Wi-Fi" -> {
+            field("Network name (SSID)", a, { a = it }); field("Password", b, { b = it })
+            Text("Security", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("WPA", "WEP", "nopass").forEach { security -> FilterChip(selected = c.ifBlank { "WPA" } == security, onClick = { c = security }, label = { Text(security) }) }
+            }
+            SwitchRow("Hidden network", d == "true") { d = it.toString() }
+            LaunchedEffect(a, b, c, d) { if (a.isNotBlank()) onContent(QrGenerator.wifi(a, b, c.ifBlank { "WPA" }, d == "true")) else onContent("") }
+        }
+        "Contact" -> {
+            field("Name", a, { a = it }); field("Phone (optional)", b, { b = it }); field("Email (optional)", c, { c = it }); field("Organization (optional)", d, { d = it })
+            LaunchedEffect(a, b, c, d) { onContent(if (a.isBlank()) "" else QrGenerator.vCard(a, b, c, d)) }
+        }
+        "Location" -> {
+            field("Latitude (-90 to 90)", a, { a = it }); field("Longitude (-180 to 180)", b, { b = it }); field("Label (optional)", c, { c = it })
+            LaunchedEffect(a, b, c) { if (a.isNotBlank() && b.isNotBlank()) onContent(QrGenerator.location(a, b, c)) else onContent("") }
+        }
+    }
+}
+
+@Composable
+fun SwitchRow(label: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) { Text(label, Modifier.weight(1f)); Switch(checked, onChecked) }
+}
+
+@Composable
+fun HistoryScreen(vm: QRViewModel) {
+    val items by vm.history.collectAsStateWithLifecycle(emptyList())
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var selected by remember { mutableStateOf<HistoryEntity?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("History", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+            if (items.isNotEmpty()) TextButton({ confirmClear = true }) { Text("Clear all") }
+        }
+        if (items.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No QR history yet", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+                items(items, key = { it.id }) { item ->
+                    HistoryRow(item, { selected = item }, { scope.launch { vm.delete(item.id) } }, { copy(context, item.content); toast(context, "Copied") }, { shareText(context, item.content) })
+                }
+            }
+        }
+    }
+    if (confirmClear) AlertDialog(
+        onDismissRequest = { confirmClear = false },
+        title = { Text("Clear history?") },
+        text = { Text("This will permanently remove all saved scan and generated QR history from this device.") },
+        confirmButton = { TextButton({ confirmClear = false; scope.launch { vm.clear() } }) { Text("Clear") } },
+        dismissButton = { TextButton({ confirmClear = false }) { Text("Cancel") } }
+    )
+    selected?.let { item ->
+        AlertDialog(
+            onDismissRequest = { selected = null },
+            title = { Text(item.title) },
+            text = { Text(item.content, modifier = Modifier.verticalScroll(rememberScrollState())) },
+            confirmButton = { TextButton({ shareText(context, item.content) }) { Text("Share") } },
+            dismissButton = { TextButton({ copy(context, item.content); toast(context, "Copied") }) { Text("Copy") } }
+        )
+    }
+}
+
+@Composable
+fun HistoryRow(item: HistoryEntity, open: () -> Unit, delete: () -> Unit, copy: () -> Unit, share: () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp)) {
+            Row {
+                Text(item.title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(item.timestamp)), style = MaterialTheme.typography.labelSmall)
+            }
+            Text(item.content, maxLines = 2, style = MaterialTheme.typography.bodySmall, modifier = Modifier.clickable(onClick = open).padding(top = 6.dp))
+            Row {
+                TextButton(copy) { Text("Copy") }; TextButton(share) { Text("Share") }; TextButton(delete) { Text("Delete") }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsScreen(mode: ThemeMode, setMode: (ThemeMode) -> Unit) {
+    val context = LocalContext.current
+    val activity = context as? MainActivity
+    val consentInfo = remember { UserMessagingPlatform.getConsentInformation(context) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+        Text("Settings", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(20.dp))
+        Text("Appearance", style = MaterialTheme.typography.titleMedium)
+        ThemeMode.values().forEach { option ->
+            Row(Modifier.fillMaxWidth().clickable { setMode(option) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = mode == option, onClick = { setMode(option) }); Text(option.name.lowercase().replaceFirstChar { it.uppercase() }, Modifier.padding(start = 8.dp))
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Text("Privacy", style = MaterialTheme.typography.titleMedium)
+        Text("QR contents are processed locally. The app does not have an account system or a backend for QR data.", Modifier.padding(top = 8.dp))
+        if (consentInfo.privacyOptionsRequirementStatus == ConsentInformation.PrivacyOptionsRequirementStatus.REQUIRED && activity != null) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(onClick = { UserMessagingPlatform.showPrivacyOptionsForm(activity) }) { Text("Privacy choices") }
+        }
+        Spacer(Modifier.height(20.dp))
+        Text("Permissions", style = MaterialTheme.typography.titleMedium)
+        Text("Only camera permission is requested, and only when you choose Scan QR. Gallery selection uses the Android system picker, so storage permission is not required.", Modifier.padding(top = 8.dp))
+    }
+}
+
+fun validateGenerator(type: String, content: String): String? = when (type) {
+    "Website" -> if (!isSafeWebUrl(content.trim())) "Enter a valid http:// or https:// URL." else null
+    "Email" -> if (!Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$").matches(content.removePrefix("mailto:").substringBefore('?'))) "Enter a valid email address." else null
+    "Location" -> runCatching {
+        val uri = Uri.parse(content)
+        val lat = uri.schemeSpecificPart.substringBefore(',').toDouble()
+        val lon = uri.schemeSpecificPart.substringAfter(',').substringBefore('?').toDouble()
+        require(lat in -90.0..90.0 && lon in -180.0..180.0)
+        null
+    }.getOrElse { "Enter valid latitude and longitude values." }
+    else -> null
+}
+
+fun copy(context: Context, value: String) {
+    context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("QR result", value))
+}
+
+fun shareText(context: Context, value: String) {
+    runCatching {
+        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, value) }, "Share QR result"))
+    }.onFailure { toast(context, "No app is available to share this result") }
+}
+
+fun openUrl(context: Context, value: String) {
+    try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(value))) }
+    catch (_: ActivityNotFoundException) { toast(context, "No browser is available") }
+}
+
+fun toast(context: Context, msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+
+fun shareBitmap(context: Context, bitmap: Bitmap) {
+    val file = context.cacheDir.resolve("shared_qr_${System.currentTimeMillis()}.png")
+    val uri = runCatching {
+        file.outputStream().use { out -> check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) { "PNG encoding failed" } }
+        androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
+    }.getOrElse { toast(context, "Could not prepare QR image"); return }
+    runCatching {
+        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "image/png"; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }, "Share QR image"))
+    }.onFailure { toast(context, "No app is available to share this image") }
+}
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\AppSettings.kt ====================
+
+package com.aakash.qrscanner
+
+import android.content.Context
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+private val Context.settingsDataStore by preferencesDataStore(name = "settings")
+
+object AppSettings {
+    private val THEME = stringPreferencesKey("theme_mode")
+
+    fun themeFlow(context: Context): Flow<ThemeMode> = context.settingsDataStore.data.map { prefs ->
+        runCatching { ThemeMode.valueOf(prefs[THEME] ?: ThemeMode.SYSTEM.name) }.getOrDefault(ThemeMode.SYSTEM)
+    }
+
+    suspend fun setTheme(context: Context, mode: ThemeMode) {
+        context.settingsDataStore.edit { it[THEME] = mode.name }
+    }
+}
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\QRApplication.kt ====================
+
+package com.aakash.qrscanner
+
+import android.app.Application
+import androidx.room.Room
+import com.aakash.qrscanner.data.AppDatabase
+import com.aakash.qrscanner.data.HistoryRepository
+
+class QRApplication : Application() {
+    lateinit var repository: HistoryRepository
+        private set
+    override fun onCreate() {
+        super.onCreate()
+        val db = Room.databaseBuilder(this, AppDatabase::class.java, "qr_history.db").build()
+        repository = HistoryRepository(db.historyDao())
+    }
+}
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\ads\AdBanner.kt ====================
+
+package com.aakash.qrscanner.ads
+
+import android.view.ViewGroup
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.viewinterop.AndroidView
+import com.aakash.qrscanner.BuildConfig
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.AdSize
+import com.google.android.gms.ads.AdView
+
+@Composable
+fun AdBanner(modifier: Modifier = Modifier) {
+    val width = LocalConfiguration.current.screenWidthDp.coerceAtLeast(1)
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            AdView(context).apply {
+                adUnitId = BuildConfig.BANNER_AD_UNIT_ID
+                setAdSize(AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(context, width))
+                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                loadAd(AdRequest.Builder().build())
+            }
+        }
+    )
+}
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\data\AppDatabase.kt ====================
+
+package com.aakash.qrscanner.data
+
+import androidx.room.Database
+import androidx.room.RoomDatabase
+
+@Database(entities = [HistoryEntity::class], version = 1, exportSchema = false)
+abstract class AppDatabase : RoomDatabase() { abstract fun historyDao(): HistoryDao }
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\data\History.kt ====================
+
+package com.aakash.qrscanner.data
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+enum class HistoryKind { SCANNED, GENERATED }
+
+@Entity(tableName = "history")
+data class HistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val kind: String,
+    val title: String,
+    val content: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\data\HistoryDao.kt ====================
+
+package com.aakash.qrscanner.data
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface HistoryDao {
+    @Query("SELECT * FROM history ORDER BY timestamp DESC")
+    fun observeAll(): Flow<List<HistoryEntity>>
+
+    @Insert suspend fun insert(item: HistoryEntity)
+
+    @Query("DELETE FROM history WHERE id = :id") suspend fun delete(id: Long)
+
+    @Query("DELETE FROM history") suspend fun clear()
+
+    @Query("DELETE FROM history WHERE id IN (SELECT id FROM history ORDER BY timestamp DESC LIMIT -1 OFFSET :keep)")
+    suspend fun trimTo(keep: Int)
+}
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\data\HistoryRepository.kt ====================
+
+package com.aakash.qrscanner.data
+
+class HistoryRepository(private val dao: HistoryDao) {
+    val items = dao.observeAll()
+    suspend fun add(kind: HistoryKind, title: String, content: String) {
+        dao.insert(HistoryEntity(kind = kind.name, title = title, content = content))
+        dao.trimTo(500)
+    }
+    suspend fun delete(id: Long) = dao.delete(id)
+    suspend fun clear() = dao.clear()
+}
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\generator\QrGenerator.kt ====================
+
+package com.aakash.qrscanner.generator
+
+import android.graphics.Bitmap
+import android.graphics.Color
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.MultiFormatWriter
+import com.google.zxing.common.BitMatrix
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.util.EnumMap
+
+object QrGenerator {
+    fun encode(content: String, size: Int = 1024): Bitmap {
+        require(content.isNotBlank())
+        require(size in 256..2048)
+        val hints = EnumMap<EncodeHintType, Any>(EncodeHintType::class.java).apply {
+            put(EncodeHintType.MARGIN, 2)
+            put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.M)
+            put(EncodeHintType.CHARACTER_SET, StandardCharsets.UTF_8.name())
+        }
+        val matrix: BitMatrix = MultiFormatWriter().encode(content, BarcodeFormat.QR_CODE, size, size, hints)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        for (y in 0 until size) for (x in 0 until size) bitmap.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
+        return bitmap
+    }
+
+    fun wifi(ssid: String, password: String, security: String, hidden: Boolean): String =
+        "WIFI:T:${escape(security)};S:${escape(ssid)};P:${escape(password)};H:${if (hidden) "true" else "false"};;"
+
+    fun vCard(name: String, phone: String, email: String, organization: String): String = buildString {
+        append("BEGIN:VCARD\nVERSION:3.0\n")
+        append("FN:${escapeVCard(name)}\n")
+        if (phone.isNotBlank()) append("TEL:${escapeVCard(phone)}\n")
+        if (email.isNotBlank()) append("EMAIL:${escapeVCard(email)}\n")
+        if (organization.isNotBlank()) append("ORG:${escapeVCard(organization)}\n")
+        append("END:VCARD")
+    }
+
+    fun location(lat: String, lon: String, label: String): String =
+        "geo:${lat.trim()},${lon.trim()}?q=${URLEncoder.encode(label.trim().ifBlank { "Location" }, StandardCharsets.UTF_8.name())}"
+
+    private fun escape(value: String): String = value
+        .replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace(":", "\\:")
+        .replace("\n", "\\n")
+        .replace("\r", "")
+
+    private fun escapeVCard(value: String): String = value
+        .replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\n", "\\n")
+        .replace("\r", "")
+}
+
+
+==================== .\app\src\main\java\com\aakash\qrscanner\scanner\ScannerUtils.kt ====================
+
+package com.aakash.qrscanner.scanner
+
+import android.net.Uri
+import com.google.mlkit.vision.barcode.common.Barcode
+
+fun barcodeTitle(barcode: Barcode): String = when (barcode.valueType) {
+    Barcode.TYPE_URL -> "Website"
+    Barcode.TYPE_WIFI -> "Wi-Fi"
+    Barcode.TYPE_CONTACT_INFO -> "Contact"
+    Barcode.TYPE_EMAIL -> "Email"
+    Barcode.TYPE_PHONE -> "Phone"
+    Barcode.TYPE_SMS -> "SMS"
+    Barcode.TYPE_GEO -> "Location"
+    Barcode.TYPE_CALENDAR_EVENT -> "Calendar event"
+    Barcode.TYPE_DRIVER_LICENSE -> "Driver license"
+    else -> "Text"
+}
+
+fun isSafeWebUrl(value: String): Boolean = try {
+    val uri = Uri.parse(value)
+    (uri.scheme.equals("https", true) || uri.scheme.equals("http", true)) && !uri.host.isNullOrBlank()
+} catch (_: Exception) { false }
+

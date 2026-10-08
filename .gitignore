@@ -1,0 +1,42 @@
+.gradle/
+local.properties
+.idea/
+*.iml
+build/
+app/build/
+.externalNativeBuild/
+.cxx/
+signing.properties
+*.jks
+*.keystore
+captures/
+
+# Local signing credentials
+signing.properties
+*.jks
+*.keystore
+*.p12
+
+# Android/Gradle local files
+.gradle/
+local.properties
+
+# Build outputs
+build/
+app/build/
+
+# IDE/local files
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary test files
+qr-test.png
+
+# Internal backup files
+*.backup
+*.bak
+*.before-*
