@@ -81,30 +81,47 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestAdConsent()
         val repo = (application as QRApplication).repository
-        setContent { QRApp(repo, adsReady.value) }
+        requestAdConsent {
+            setContent { QRApp(repo, adsReady.value) }
+        }
     }
 
-    private fun requestAdConsent() {
+    private fun requestAdConsent(onReady: () -> Unit) {
         val consentInfo = UserMessagingPlatform.getConsentInformation(this)
         val params = ConsentRequestParameters.Builder().build()
-        fun initializeAds() {
-            if (adsReady.value) return
-            MobileAds.initialize(this) { adsReady.value = true }
+        val shown = AtomicBoolean(false)
+
+        fun finishConsentAndShowApp() {
+            if (!shown.compareAndSet(false, true)) return
+            onReady()
         }
+
+        fun initializeAds() {
+            if (adsReady.value) {
+                finishConsentAndShowApp()
+                return
+            }
+            MobileAds.initialize(this) {
+                runOnUiThread {
+                    adsReady.value = true
+                    finishConsentAndShowApp()
+                }
+            }
+        }
+
         consentInfo.requestConsentInfoUpdate(
             this,
             params,
             {
-                UserMessagingPlatform.loadAndShowConsentFormIfRequired(this) { initializeAds() }
+                UserMessagingPlatform.loadAndShowConsentFormIfRequired(this) {
+                    initializeAds()
+                }
             },
-            { initializeAds() }
+            {
+                initializeAds()
+            }
         )
-        if (consentInfo.consentStatus == ConsentInformation.ConsentStatus.OBTAINED ||
-            consentInfo.consentStatus == ConsentInformation.ConsentStatus.NOT_REQUIRED) {
-            initializeAds()
-        }
     }
 }
 
