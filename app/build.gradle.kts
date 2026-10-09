@@ -27,19 +27,13 @@ android {
 
     buildTypes {
         debug {
-            manifestPlaceholders["ADMOB_APP_ID"] = "ca-app-pub-3940256099942544~3347511713"
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
-            buildConfigField("String", "ADMOB_APP_ID", "\"ca-app-pub-3940256099942544~3347511713\"")
-            buildConfigField("String", "BANNER_AD_UNIT_ID", "\"ca-app-pub-3940256099942544/9214589741\"")
         }
         release {
-            manifestPlaceholders["ADMOB_APP_ID"] = "ca-app-pub-9666285199414231~5259938170"
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            buildConfigField("String", "ADMOB_APP_ID", "\"ca-app-pub-9666285199414231~5259938170\"")
-            buildConfigField("String", "BANNER_AD_UNIT_ID", "\"ca-app-pub-9666285199414231/8108181535\"")
             if (signingProperties.isNotEmpty()) {
                 signingConfig = signingConfigs.create("release") {
                     storeFile = rootProject.file(signingProperties.getProperty("storeFile"))
@@ -84,8 +78,6 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.7")
 
     implementation("com.google.zxing:core:3.5.3")
-    implementation("com.google.android.gms:play-services-ads:25.5.0")
-    implementation("com.google.android.ump:user-messaging-platform:4.0.0")
 }
 
 
