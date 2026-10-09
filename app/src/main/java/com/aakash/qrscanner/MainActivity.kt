@@ -679,7 +679,6 @@ fun HistoryRow(item: HistoryEntity, open: () -> Unit, delete: () -> Unit, copy: 
 
 @Composable
 fun SettingsScreen(mode: ThemeMode, setMode: (ThemeMode) -> Unit) {
-    val context = LocalContext.current
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(20.dp))
