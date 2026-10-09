@@ -55,17 +55,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.aakash.qrscanner.ads.AdBanner
 import com.aakash.qrscanner.data.HistoryEntity
 import com.aakash.qrscanner.data.HistoryKind
 import com.aakash.qrscanner.data.HistoryRepository
 import com.aakash.qrscanner.generator.QrGenerator
 import com.aakash.qrscanner.scanner.barcodeTitle
 import com.aakash.qrscanner.scanner.isSafeWebUrl
-import com.google.android.gms.ads.MobileAds
-import com.google.android.ump.ConsentInformation
-import com.google.android.ump.ConsentRequestParameters
-import com.google.android.ump.UserMessagingPlatform
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
@@ -77,51 +72,10 @@ enum class Screen { HOME, SCAN, GENERATE, HISTORY, SETTINGS }
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
 class MainActivity : ComponentActivity() {
-    private val adsReady = mutableStateOf(false)
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val repo = (application as QRApplication).repository
-        requestAdConsent {
-            setContent { QRApp(repo, adsReady.value) }
-        }
-    }
-
-    private fun requestAdConsent(onReady: () -> Unit) {
-        val consentInfo = UserMessagingPlatform.getConsentInformation(this)
-        val params = ConsentRequestParameters.Builder().build()
-        val shown = AtomicBoolean(false)
-
-        fun finishConsentAndShowApp() {
-            if (!shown.compareAndSet(false, true)) return
-            onReady()
-        }
-
-        fun initializeAds() {
-            if (adsReady.value) {
-                finishConsentAndShowApp()
-                return
-            }
-            MobileAds.initialize(this) {
-                runOnUiThread {
-                    adsReady.value = true
-                    finishConsentAndShowApp()
-                }
-            }
-        }
-
-        consentInfo.requestConsentInfoUpdate(
-            this,
-            params,
-            {
-                UserMessagingPlatform.loadAndShowConsentFormIfRequired(this) {
-                    initializeAds()
-                }
-            },
-            {
-                initializeAds()
-            }
-        )
+        setContent { QRApp(repo) }
     }
 }
 
@@ -138,7 +92,7 @@ class QRViewModelFactory(private val repo: HistoryRepository) : ViewModelProvide
 }
 
 @Composable
-fun QRApp(repo: HistoryRepository, adsReady: Boolean) {
+fun QRApp(repo: HistoryRepository) {
     val vm: QRViewModel = viewModel(factory = QRViewModelFactory(repo))
     val context = LocalContext.current
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
@@ -188,9 +142,9 @@ fun QRApp(repo: HistoryRepository, adsReady: Boolean) {
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
                 when (screen) {
-                    Screen.HOME -> HomeScreen({ screen = Screen.SCAN }, { screen = Screen.GENERATE }, adsReady)
+                    Screen.HOME -> HomeScreen({ screen = Screen.SCAN }, { screen = Screen.GENERATE })
                     Screen.SCAN -> ScanScreen({ screen = Screen.HOME }, vm)
-                    Screen.GENERATE -> GenerateScreen({ screen = Screen.HOME }, vm, adsReady)
+                    Screen.GENERATE -> GenerateScreen({ screen = Screen.HOME }, vm)
                     Screen.HISTORY -> HistoryScreen(vm)
                     Screen.SETTINGS -> SettingsScreen(themeMode) { mode ->
                         themeMode = mode
@@ -204,7 +158,7 @@ fun QRApp(repo: HistoryRepository, adsReady: Boolean) {
 
 
 @Composable
-fun HomeScreen(onScan: () -> Unit, onGenerate: () -> Unit, adsReady: Boolean) {
+fun HomeScreen(onScan: () -> Unit, onGenerate: () -> Unit) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -245,7 +199,7 @@ fun HomeScreen(onScan: () -> Unit, onGenerate: () -> Unit, adsReady: Boolean) {
             HomeActionCard("Create QR", "Text, Wi-Fi & more", Icons.Default.QrCode2, onGenerate, Modifier.weight(1f))
         }
         Spacer(Modifier.height(18.dp))
-        if (adsReady) AdBanner(Modifier.fillMaxWidth())
+
         Spacer(Modifier.height(12.dp))
         Text(
             "No account required. Your QR content stays on this device.",
@@ -513,7 +467,7 @@ fun ResultCard(title: String, value: String, onClear: () -> Unit, onCopy: () -> 
 
 
 @Composable
-fun GenerateScreen(onBack: () -> Unit, vm: QRViewModel, adsReady: Boolean) {
+fun GenerateScreen(onBack: () -> Unit, vm: QRViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     BackHandler(onBack = onBack)
@@ -603,7 +557,7 @@ fun GenerateScreen(onBack: () -> Unit, vm: QRViewModel, adsReady: Boolean) {
             }
         }
         Spacer(Modifier.height(16.dp))
-        if (adsReady) AdBanner(Modifier.fillMaxWidth())
+
         Spacer(Modifier.height(8.dp))
     }
 }
@@ -726,8 +680,6 @@ fun HistoryRow(item: HistoryEntity, open: () -> Unit, delete: () -> Unit, copy: 
 @Composable
 fun SettingsScreen(mode: ThemeMode, setMode: (ThemeMode) -> Unit) {
     val context = LocalContext.current
-    val activity = context as? MainActivity
-    val consentInfo = remember { UserMessagingPlatform.getConsentInformation(context) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(20.dp))
@@ -740,10 +692,6 @@ fun SettingsScreen(mode: ThemeMode, setMode: (ThemeMode) -> Unit) {
         Spacer(Modifier.height(20.dp))
         Text("Privacy", style = MaterialTheme.typography.titleMedium)
         Text("QR contents are processed locally. The app does not have an account system or a backend for QR data.", Modifier.padding(top = 8.dp))
-        if (consentInfo.privacyOptionsRequirementStatus == ConsentInformation.PrivacyOptionsRequirementStatus.REQUIRED && activity != null) {
-            Spacer(Modifier.height(10.dp))
-            OutlinedButton(onClick = { UserMessagingPlatform.showPrivacyOptionsForm(activity) { } }) { Text("Privacy choices") }
-        }
         Spacer(Modifier.height(20.dp))
         Text("Permissions", style = MaterialTheme.typography.titleMedium)
         Text("Only camera permission is requested, and only when you choose Scan QR. Gallery selection uses the Android system picker, so storage permission is not required.", Modifier.padding(top = 8.dp))
