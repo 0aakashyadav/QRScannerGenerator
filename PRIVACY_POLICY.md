@@ -21,7 +21,8 @@ The app requests camera permission only for camera scanning. Gallery image selec
 
 ## Advertising
 
-The release version displays limited banner advertising using Google Mobile Ads. Advertising and consent behavior are governed by Google's applicable privacy and advertising policies. The app uses Google's User Messaging Platform where required to obtain and manage consent choices.
+The v2 development build does not integrate an advertising SDK and does not display ads. Monetization may be reconsidered for a future release, with the privacy policy updated before any advertising functionality is added.
+
 
 ## Sharing and opening content
 
