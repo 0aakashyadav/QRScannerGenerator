@@ -10,10 +10,6 @@ A privacy-focused native Android QR utility app.
 - Local Room history for scanned and generated QR codes
 - Copy/share/delete/clear history
 - Light/dark/system theme preference persisted locally
-- Minimal banner ads outside the camera scanner
-- Google UMP consent flow and privacy choices where required
-- Debug builds use Google's official test AdMob IDs
-- Release builds use the supplied production AdMob IDs
 - No login, no backend and no QR-content upload
 
 ## Stable application ID
@@ -27,10 +23,10 @@ The supplied environment did not contain the Android SDK/Gradle distribution cac
 ## Release signing
 Copy `signing.properties.example` to `signing.properties`, fill in your private keystore values, and build a signed release APK/AAB. Never commit the keystore or `signing.properties`.
 
-## Ad configuration
-- Debug: Google's official test App ID and test banner unit.
-- Release: the production App ID and banner unit supplied for this project.
-- No interstitial, rewarded, rewarded-interstitial or app-open ads are implemented.
+## Monetization
+
+Version 2 development builds are ad-free. Advertising will only be reconsidered after core features, privacy behavior, and release quality are complete.
+
 
 ## QA before publishing
 Test on a physical Android phone: camera permission, camera start/stop, torch, repeated scans, gallery scanning, all generator types, invalid inputs, save/share, history persistence, rotation, dark/light/system theme, back navigation, offline QR operations, and both debug/release ad behavior.
